@@ -192,6 +192,16 @@ async def test_duplicate_join_does_not_schedule_second_timeout():
 
 
 @pytest.mark.asyncio
+async def test_join_logs_real_chat_id_when_whitelist_rejects(caplog):
+    runtime = await make_runtime(settings(allowed_chat_ids=frozenset({-100999})))
+    with caplog.at_level("WARNING", logger="telegram_guard_bot.cloud"):
+        await service.on_chat_member(member_update(), runtime)
+    assert "chat_id=-100123" in caplog.text
+    assert "ALLOWED_CHAT_IDS" in caplog.text
+    runtime.bot.restrict_chat_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_qstash_publish_failure_is_visible_and_does_not_fake_verification():
     runtime = await make_runtime()
     runtime.qstash.message.publish_json.side_effect = RuntimeError("QStash unavailable")

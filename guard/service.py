@@ -312,10 +312,15 @@ async def on_chat_member(update: Update, runtime: Runtime) -> None:
         return
     settings = runtime.settings
     chat_id = change.chat.id
+    user = change.new_chat_member.user
+    LOGGER.info(
+        "收到成员状态变化 chat_id=%s user_id=%s old_status=%s new_status=%s",
+        chat_id, user.id, change.old_chat_member.status, change.new_chat_member.status,
+    )
     if not chat_allowed(runtime, chat_id):
+        LOGGER.warning("入群事件被群白名单跳过 chat_id=%s；请核对 ALLOWED_CHAT_IDS", chat_id)
         return
     old, new = change.old_chat_member, change.new_chat_member
-    user = new.user
     if is_departure(old, new):
         session = await runtime.store.for_user(chat_id, user.id)
         if session is not None and await runtime.store.remove(session.token) is not None:
@@ -323,6 +328,7 @@ async def on_chat_member(update: Update, runtime: Runtime) -> None:
             await delete_session_messages(runtime, session)
         return
     if not is_new_member(old, new) or user.is_bot or new.status in {"administrator", "creator"}:
+        LOGGER.info("忽略非普通新成员状态变化 chat_id=%s user_id=%s", chat_id, user.id)
         return
     if await runtime.store.for_user(chat_id, user.id) is not None:
         return

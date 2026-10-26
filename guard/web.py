@@ -17,6 +17,8 @@ from .service import Runtime, handle_timeout, handle_update
 
 LOGGER = logging.getLogger("telegram_guard_bot.web")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+# HTTPX request logs include the Telegram Token in Bot API URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -133,6 +135,17 @@ async def telegram_webhook(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="无效 Telegram Update") from exc
     if update is None:
         return Response(status_code=200)
+    update_type = next((
+        name for name in (
+            "chat_member", "my_chat_member", "message", "callback_query",
+            "chat_join_request",
+        ) if getattr(update, name, None) is not None
+    ), "other")
+    chat = update.effective_chat
+    LOGGER.info(
+        "收到 Telegram Update update_id=%s type=%s chat_id=%s",
+        update.update_id, update_type, chat.id if chat else None,
+    )
     try:
         await handle_update(update, active)
     except Exception:
