@@ -17,7 +17,6 @@ from .service import Runtime, handle_timeout, handle_update
 
 LOGGER = logging.getLogger("telegram_guard_bot.web")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-# HTTPX request logs include the Telegram Token in Bot API URLs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -77,7 +76,6 @@ async def health(request: Request) -> JSONResponse:
     active = configured_or_error(request)
     if active is None:
         return JSONResponse({"ok": False, "error": "configuration_or_startup_error"}, status_code=503)
-    # 不返回 Token、群 ID、管理员 ID、Redis/QStash 状态或 X API Key。
     return JSONResponse({"ok": True, "bot": active.bot.username})
 
 
@@ -149,7 +147,6 @@ async def telegram_webhook(request: Request) -> Response:
     try:
         await handle_update(update, active)
     except Exception:
-        # 返回非 2xx，让 Telegram 重试瞬时 Redis/QStash/函数错误；状态转移是幂等的。
         LOGGER.exception("Telegram Update 处理失败 update_id=%s", update.update_id)
         raise HTTPException(status_code=503, detail="临时处理失败")
     return Response(status_code=200)
@@ -161,7 +158,6 @@ async def timeout_webhook(request: Request) -> Response:
     raw = await request.body()
     signature = request.headers.get("Upstash-Signature", "")
     try:
-        # 必须验签原始字节，不能先解析再重新序列化 JSON。
         active.receiver.verify(
             signature=signature,
             body=raw.decode("utf-8"),

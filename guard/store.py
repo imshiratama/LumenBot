@@ -30,7 +30,6 @@ class Session:
         return cls(**data)
 
 
-# Atomic Redis transitions avoid races between Telegram and QStash invocations.
 STATE_SCRIPT = """
 local raw = redis.call('GET', KEYS[1])
 if not raw then return nil end

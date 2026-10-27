@@ -112,7 +112,7 @@ def keyboard(settings: Settings, token: str, bot_username: str, private: bool) -
 
 async def answer(query: object, text: str) -> None:
     try:
-        await query.answer(text=text, show_alert=True)  # type: ignore[attr-defined]
+        await query.answer(text=text, show_alert=True)
     except TelegramError:
         LOGGER.info("回调提示发送失败", exc_info=True)
 
@@ -383,7 +383,6 @@ async def on_chat_member(update: Update, runtime: Runtime) -> None:
             await delete_message(runtime, chat_id, prompt.message_id)
     except TelegramError:
         LOGGER.error("验证引导发送失败 user_id=%s", user.id, exc_info=True)
-        # 保留会话，QStash 到期仍能处理，避免永久禁言。
         await admin_alert(runtime, chat_id, f"用户 {user.id} 已禁言，但验证引导发送失败。")
 
 
