@@ -39,8 +39,16 @@ if now >= s.expires_at then return nil end
 local action = ARGV[2]
 if action == 'read' then return raw end
 if action == 'claim' then
-  if s.stage ~= 'checking' and s.stage ~= 'review' then return nil end
+  if s.stage ~= 'checking' and s.stage ~= 'review' and s.stage ~= 'manual_approving' then return nil end
   s.stage = 'approving'
+elseif action == 'manual_approve' then
+  if tostring(s.chat_id) ~= ARGV[3] then return nil end
+  if s.stage ~= 'new' and s.stage ~= 'ready' and s.stage ~= 'awaiting_x' and s.stage ~= 'checking' and s.stage ~= 'review' then return nil end
+  s.stage = 'manual_approving'
+elseif action == 'reject' then
+  if tostring(s.chat_id) ~= ARGV[3] then return nil end
+  if s.stage ~= 'new' and s.stage ~= 'ready' and s.stage ~= 'awaiting_x' and s.stage ~= 'checking' and s.stage ~= 'review' then return nil end
+  s.stage = 'rejecting'
 elseif action == 'stage' then
   if s.stage ~= ARGV[3] then return nil end
   s.stage = ARGV[4]
@@ -171,6 +179,14 @@ class SessionStore:
 
     async def claim_completion(self, token: str) -> Session | None:
         raw = await self._state(token, "claim")
+        return Session.from_json(raw) if raw else None
+
+    async def claim_manual_approval(self, token: str, chat_id: int) -> Session | None:
+        raw = await self._state(token, "manual_approve", str(chat_id))
+        return Session.from_json(raw) if raw else None
+
+    async def claim_rejection(self, token: str, chat_id: int) -> Session | None:
+        raw = await self._state(token, "reject", str(chat_id))
         return Session.from_json(raw) if raw else None
 
     async def expire(self, token: str) -> Session | None:

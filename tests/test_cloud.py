@@ -24,7 +24,7 @@ from guard.store import (
 def settings(**overrides) -> Settings:
     values = dict(
         tg_token="123456:TEST", target_x_username="TargetX", twitterapi_key="x-key",
-        admin_ids=frozenset({999}), allowed_chat_ids=frozenset({-100123}),
+        allowed_chat_ids=frozenset({-100123}),
         webhook_secret="webhook-secret-123456", admin_secret="admin-secret-123456",
         redis_url="https://redis.invalid", redis_token="redis-secret", qstash_token="qstash-secret",
         qstash_current_signing_key="current", qstash_next_signing_key="next",
@@ -72,9 +72,15 @@ class MemoryRedis:
             if action == "read":
                 return raw
             if action == "claim":
-                if session.stage not in {"checking", "review"}:
+                if session.stage not in {"checking", "review", "manual_approving"}:
                     return None
                 session.stage = "approving"
+            elif action in {"manual_approve", "reject"}:
+                if session.chat_id != int(args[2]):
+                    return None
+                if session.stage not in {"new", "ready", "awaiting_x", "checking", "review"}:
+                    return None
+                session.stage = "manual_approving" if action == "manual_approve" else "rejecting"
             elif action == "stage":
                 if session.stage != args[2]:
                     return None
@@ -148,9 +154,9 @@ async def make_runtime(config: Settings | None = None) -> Runtime:
     return runtime
 
 
-async def pending(runtime: Runtime, stage: str = "checking", token: str = "token") -> Session:
+async def pending(runtime: Runtime, stage: str = "checking", token: str = "token", chat_id: int = -100123) -> Session:
     now = time.time()
-    session = Session(token=token, chat_id=-100123, user_id=123, created_at=now, expires_at=now + 300, stage=stage, x_username="UserA")
+    session = Session(token=token, chat_id=chat_id, user_id=123, created_at=now, expires_at=now + 300, stage=stage, x_username="UserA")
     assert await runtime.store.add(session)
     return session
 
@@ -167,6 +173,15 @@ def message_update(text: str):
     return SimpleNamespace(effective_message=SimpleNamespace(
         text=text, chat=SimpleNamespace(type="private"), reply_text=AsyncMock(), entities=[],
     ), effective_user=SimpleNamespace(id=123, first_name="User"))
+
+
+def review_update(data: str = "ma:token", user_id: int = 999, chat_id: int = -100123):
+    return SimpleNamespace(callback_query=SimpleNamespace(
+        data=data,
+        from_user=SimpleNamespace(id=user_id, is_bot=False),
+        message=SimpleNamespace(chat=SimpleNamespace(id=chat_id)),
+        answer=AsyncMock(),
+    ))
 
 
 @pytest.mark.asyncio
@@ -320,20 +335,91 @@ async def test_old_timeout_does_not_remove_new_member_index():
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_admin_cannot_approve():
+async def test_join_card_has_group_admin_action_row():
+    runtime = await make_runtime()
+    await service.on_chat_member(member_update(), runtime)
+    markup = runtime.bot.send_message.await_args.kwargs["reply_markup"]
+    assert [button.text for button in markup.inline_keyboard[2]] == ["✅ 管理员批准", "❌ 管理员拒绝"]
+    token = runtime.qstash.message.publish_json.await_args.kwargs["body"]["token"]
+    assert [button.callback_data for button in markup.inline_keyboard[2]] == [f"ma:{token}", f"mr:{token}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["administrator", "creator"])
+@pytest.mark.parametrize("action", ["ma", "mr"])
+async def test_current_group_admins_can_approve_or_reject(status, action):
+    runtime = await make_runtime()
+    await pending(runtime, "new")
+    runtime.bot.get_chat_member.return_value = SimpleNamespace(status=status)
+    update = review_update(f"{action}:token")
+    await service.on_manual_review(update, runtime)
+    runtime.bot.get_chat_member.assert_any_await(-100123, 999)
+    if action == "mr":
+        runtime.bot.get_chat_member.assert_awaited_with(-100123, 123)
+    if action == "ma":
+        runtime.bot.restrict_chat_member.assert_awaited_once()
+        runtime.bot.ban_chat_member.assert_not_awaited()
+    else:
+        runtime.bot.ban_chat_member.assert_awaited_once()
+        runtime.bot.unban_chat_member.assert_awaited_once()
+        runtime.bot.restrict_chat_member.assert_not_awaited()
+    assert await runtime.store.get("token") is None
+
+
+@pytest.mark.asyncio
+async def test_regular_member_cannot_use_admin_buttons():
     runtime = await make_runtime()
     await pending(runtime, "review")
-    query = SimpleNamespace(data="ma:token", from_user=SimpleNamespace(id=123), message=SimpleNamespace(chat=SimpleNamespace(id=-100123)), answer=AsyncMock())
-    await service.on_manual_review(SimpleNamespace(callback_query=query), runtime)
+    runtime.bot.get_chat_member.return_value = SimpleNamespace(status="member")
+    update = review_update()
+    await service.on_manual_review(update, runtime)
+    assert (await runtime.store.get("token")).stage == "review"
     runtime.bot.restrict_chat_member.assert_not_awaited()
-    query.from_user.id = 999
-    await service.on_manual_review(SimpleNamespace(callback_query=query), runtime)
-    runtime.bot.restrict_chat_member.assert_awaited_once()
+    runtime.bot.ban_chat_member.assert_not_awaited()
+    assert "只有本群当前管理员" in update.callback_query.answer.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_admin_identity_lookup_failure_fails_closed():
+    from telegram.error import TelegramError
+    runtime = await make_runtime()
+    await pending(runtime, "review")
+    runtime.bot.get_chat_member.side_effect = TelegramError("temporary failure")
+    update = review_update()
+    await service.on_manual_review(update, runtime)
+    assert (await runtime.store.get("token")).stage == "review"
+    runtime.bot.restrict_chat_member.assert_not_awaited()
+    assert "暂时无法确认" in update.callback_query.answer.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_cross_group_admin_callback_cannot_act():
+    runtime = await make_runtime(settings(allowed_chat_ids=frozenset({-100123, -100999})))
+    await pending(runtime, "review", chat_id=-100999)
+    runtime.bot.get_chat_member.return_value = SimpleNamespace(status="administrator")
+    await service.on_manual_review(review_update(), runtime)
+    assert (await runtime.store.get("token")).stage == "review"
+    runtime.bot.restrict_chat_member.assert_not_awaited()
+    runtime.bot.ban_chat_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejection_during_x_check_prevents_later_approval():
+    runtime = await make_runtime()
+    await pending(runtime, "checking")
+    runtime.bot.get_chat_member.return_value = SimpleNamespace(status="administrator")
+    await service.on_manual_review(review_update("mr:token"), runtime)
+    assert await service.approve(runtime, "token") == service.CompletionResult.EXPIRED
+    runtime.bot.restrict_chat_member.assert_not_awaited()
+    assert await runtime.store.get("token") is None
 
 
 def test_lua_scripts_have_atomic_guards_and_expected_keys():
     assert "if now >= s.expires_at then return nil end" in STATE_SCRIPT
     assert "if s.stage ~= ARGV[3] then return nil end" in STATE_SCRIPT
+    assert "if tostring(s.chat_id) ~= ARGV[3] then return nil end" in STATE_SCRIPT
+    assert "s.stage = 'manual_approving'" in STATE_SCRIPT
+    assert "s.stage = 'rejecting'" in STATE_SCRIPT
     assert "redis.call('GET', KEYS[2]) == ARGV[2]" in CLAIM_EXPIRED_SCRIPT
     assert "redis.call('GET', KEYS[2]) == ARGV[2]" in REMOVE_SCRIPT
     assert "owner ~= ARGV[5]" in RESTORE_SCRIPT

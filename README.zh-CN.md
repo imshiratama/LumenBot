@@ -24,7 +24,7 @@ LumenBot 提供完整的入群引导：资料检查、X 关注验证、人工审
 - **入群防护**：立即限制新成员发言，并显示验证卡片。
 - **资料检查**：验证 Telegram 名字和头像。
 - **X 关注验证**：核验用户提交的 X 账号是否关注指定账号。
-- **人工审核**：X 查询失败时，默认转交授权管理员处理。
+- **管理员操作**：群内当前管理员可直接在验证卡片上批准或拒绝。
 - **超时处理**：超过可配置的验证时限后，自动移出未完成验证的成员。
 - **并发会话**：使用 Redis 原子状态转移，协调 Telegram 和 QStash 回调。
 - **接口保护**：校验 Telegram Secret、QStash 签名和管理接口密钥。
@@ -60,7 +60,7 @@ Vercel FastAPI Webhook
 - 创建 Upstash Redis 数据库，记录 REST URL 和 REST Token。
 - 在 Upstash QStash 页面记录 Token、Current Signing Key 和 Next Signing Key。
 - 在 TwitterAPI.io 获取 API Key。
-- 准备目标 X 用户名、管理员数字用户 ID 和超级群数字 ID。
+- 准备目标 X 用户名和超级群数字 ID。
 
 ### 2. 导入 Vercel
 
@@ -80,7 +80,6 @@ Vercel FastAPI Webhook
 | `TG_TOKEN` | BotFather 提供的机器人 Token。 |
 | `TARGET_X_ID` | 要求关注的 X 用户名，不带 `@`。 |
 | `TWITTERAPI_KEY` | TwitterAPI.io 的 API Key。 |
-| `ADMIN_IDS` | 可操作人工审核的 Telegram 数字用户 ID；多个 ID 用英文逗号分隔。默认人工降级时必填。 |
 | `ALLOWED_CHAT_IDS` | 启用验证的超级群数字 ID，通常以 `-100` 开头；多个 ID 用英文逗号分隔。留空表示所有群启用，生产环境建议明确配置。 |
 | `TELEGRAM_WEBHOOK_SECRET` | Telegram Webhook 请求鉴权密钥。 |
 | `ADMIN_SETUP_SECRET` | `/api/setup` 和 `/api/setup/status` 的管理密钥。 |
@@ -146,7 +145,7 @@ Invoke-RestMethod -Uri "$base/api/setup/status" `
 
 其他群管理权限不是必需的。Bot Privacy 不控制 `chat_member` 更新，但机器人必须是群管理员才能接收其他成员的这些更新。
 
-`ADMIN_IDS` 是用户 ID；`ALLOWED_CHAT_IDS` 是群 ID。群 ID 必须保留开头的负号，不要填写群用户名或邀请链接。
+机器人会通过 Telegram 实时确认操作者是否为当前群管理员或群主，无需配置管理员 ID 名单。`ALLOWED_CHAT_IDS` 是群 ID，必须保留开头的负号，不要填写群用户名或邀请链接。
 
 ## 验证流程
 
@@ -156,7 +155,7 @@ Invoke-RestMethod -Uri "$base/api/setup/status" `
 4. 基础检查通过后，用户通过群内按钮进入私聊。Telegram 会发送带验证参数的 `/start`，用户随后直接发送 X 用户名。
 5. 机器人调用 TwitterAPI.io。仅当响应严格包含 JSON 布尔值 `data.following: true` 时，X 项才自动通过。
 6. 三项检查通过后解除限制并删除验证消息；未关注、账号不存在或资料不完整时，用户可按提示修正后重试。
-7. X 接口故障时默认创建人工审核卡片。只有 `ADMIN_IDS` 中的管理员可以操作，审核计时不会暂停。
+7. X 接口故障时默认创建人工审核卡片。初始验证卡片也有一行独立的管理员批准/拒绝按钮。机器人实时校验操作者的群主或管理员身份，审核计时不会暂停。
 8. 到期未完成时，机器人先检查成员状态，再执行封禁与解封，使用户之后仍可重新申请入群。已被管理员解除限制的普通成员不会被超时任务再次踢出。
 
 每个验证会话只能对应一个群和一名用户。更换群后需从新群的当前验证卡片重新进入，旧链接不能跨群使用。
@@ -193,7 +192,7 @@ Telegram Bot API 请求 URL 可能包含 Bot Token，分享日志前必须遮挡
 
 - 超时踢出依赖 QStash 回调；任务发布失败或 ban/unban 操作失败时，需要管理员按群内提醒处理。
 - X 数据可能存在延迟、隐私限制或服务中断。
-- 转人工审核不会延长验证时限。
+- 转人工审核或管理员手动操作不会延长验证时限。
 - 本项目不代替完整的社区风控、反垃圾或身份认证系统。
 
 ## 本地开发与测试

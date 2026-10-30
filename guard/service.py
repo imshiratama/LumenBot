@@ -107,6 +107,10 @@ def keyboard(settings: Settings, token: str, bot_username: str, private: bool) -
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("① 关注我们的 X 账号", url=settings.x_profile_url)],
         [second],
+        [
+            InlineKeyboardButton("✅ 管理员批准", callback_data=f"ma:{token}"),
+            InlineKeyboardButton("❌ 管理员拒绝", callback_data=f"mr:{token}"),
+        ],
     ])
 
 
@@ -220,7 +224,7 @@ async def ensure_review(runtime: Runtime, session: Session, reason: str) -> None
         f"Telegram 用户 ID：<code>{session.user_id}</code>\n"
         f"申报的 X 用户名：@{html.escape(session.x_username or '未提供')}\n"
         f"原因：{html.escape(reason)}\n"
-        "仅配置的 ADMIN_IDS 可操作；五分钟计时不会暂停。"
+        "仅本群当前管理员或群主可操作；计时不会暂停。"
     )
     try:
         if session.review_message_id is not None:
@@ -428,7 +432,7 @@ async def on_start(update: Update, runtime: Runtime, args: list[str]) -> None:
     if session.stage == "review":
         await message.reply_text("你的验证已转人工审核；五分钟计时仍继续。")
         return
-    if session.stage in {"checking", "approving"}:
+    if session.stage in {"checking", "approving", "manual_approving", "rejecting"}:
         await message.reply_text("正在处理你的验证，请稍候。")
         return
     if session.stage not in {"new", "ready", "awaiting_x"}:
@@ -528,41 +532,52 @@ async def on_manual_review(update: Update, runtime: Runtime) -> None:
     query = update.callback_query
     if query is None or query.message is None or not query.data:
         return
-    if not chat_allowed(runtime, query.message.chat.id):
+    chat_id = query.message.chat.id
+    if not chat_allowed(runtime, chat_id):
         await answer(query, "该群未启用验证。")
         return
-    if query.from_user.id not in runtime.settings.admin_ids:
-        await answer(query, "❌ 只有配置的管理员可以执行此操作。")
+    if query.from_user.is_bot:
+        await answer(query, "机器人不能执行管理员操作。")
+        return
+    try:
+        member = await runtime.bot.get_chat_member(chat_id, query.from_user.id)
+    except TelegramError:
+        LOGGER.warning("管理员身份校验失败 chat_id=%s user_id=%s", chat_id, query.from_user.id, exc_info=True)
+        await answer(query, "暂时无法确认你的群管理员身份，请稍后重试。")
+        return
+    if member.status not in {"administrator", "creator"}:
+        await answer(query, "❌ 只有本群当前管理员或群主可以执行此操作。")
         return
     approved = query.data.startswith("ma:")
     token = query.data[3:]
-    session = await runtime.store.get(token, chat_id=query.message.chat.id)
-    if session is None or session.stage != "review":
-        await answer(query, "该审核已处理或已过期。")
-        return
     if approved:
+        session = await runtime.store.claim_manual_approval(token, chat_id)
+        if session is None:
+            await answer(query, "该验证已处理、已过期，或正在进行其他操作。")
+            return
         result = await approve(runtime, token)
         if result == CompletionResult.APPROVED:
-            await answer(query, "✅ 已人工通过并解除禁言。")
-            await private_message(runtime, session.user_id, "✅ 管理员已通过你的入群验证。")
+            await answer(query, "✅ 已人工批准并解除禁言。")
+            await private_message(runtime, session.user_id, "✅ 群管理员已批准你的入群验证。")
         elif result == CompletionResult.TELEGRAM_ERROR:
-            await answer(query, "解除禁言失败，请检查权限后重试。")
+            await answer(query, "解除禁言失败，请检查机器人权限后重试。")
         else:
             await answer(query, "该验证已过期。")
         return
-    claimed = await runtime.store.remove(token, stage="review")
+    claimed = await runtime.store.claim_rejection(token, chat_id)
     if claimed is None:
-        await answer(query, "该审核已处理或已过期。")
+        await answer(query, "该验证已处理、已过期，或正在进行其他操作。")
         return
-    result = await kick(runtime, session, only_if_restricted=False)
+    result = await kick(runtime, claimed, only_if_restricted=False)
     if result in {KickResult.KICKED, KickResult.NOT_MEMBER}:
-        await runtime.store.clear_private(session.user_id, token)
-        await delete_session_messages(runtime, session)
-        await answer(query, "已拒绝验证并处理该成员。")
-        await private_message(runtime, session.user_id, "管理员未通过你的入群验证。")
+        await runtime.store.remove(token, stage="rejecting")
+        await runtime.store.clear_private(claimed.user_id, token)
+        await delete_session_messages(runtime, claimed)
+        await answer(query, "已拒绝验证并移出该成员。")
+        await private_message(runtime, claimed.user_id, "群管理员未批准你的入群验证。")
     else:
-        await runtime.store.restore(session, "review")
-        await admin_alert(runtime, session.chat_id, f"管理员拒绝用户 {session.user_id} 后，自动处理失败，请人工检查。")
+        await runtime.store.restore(claimed, "review")
+        await admin_alert(runtime, claimed.chat_id, f"管理员拒绝用户 {claimed.user_id} 后，自动处理失败，请人工检查。")
         await answer(query, "操作失败，请查看管理员提醒。")
 
 

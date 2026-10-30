@@ -48,7 +48,6 @@ class Settings:
     tg_token: str
     target_x_username: str
     twitterapi_key: str
-    admin_ids: frozenset[int]
     allowed_chat_ids: frozenset[int]
     webhook_secret: str
     admin_secret: str
@@ -89,9 +88,6 @@ def get_settings() -> Settings:
     if secret_pattern.fullmatch(admin_secret) is None:
         raise RuntimeError("ADMIN_SETUP_SECRET 需为 16-256 位字母、数字、_ 或 -")
     fail_open = os.getenv("X_API_FAIL_OPEN", "false").lower() in {"1", "true", "yes", "on"}
-    admins = _ids("ADMIN_IDS")
-    if not fail_open and not admins:
-        raise RuntimeError("默认人工降级需要配置 ADMIN_IDS")
     required = {
         "TG_TOKEN": os.getenv("TG_TOKEN", "").strip(),
         "TWITTERAPI_KEY": os.getenv("TWITTERAPI_KEY", "").strip(),
@@ -108,7 +104,6 @@ def get_settings() -> Settings:
         tg_token=required["TG_TOKEN"],
         target_x_username=target,
         twitterapi_key=required["TWITTERAPI_KEY"],
-        admin_ids=admins,
         allowed_chat_ids=_ids("ALLOWED_CHAT_IDS"),
         webhook_secret=webhook_secret,
         admin_secret=admin_secret,

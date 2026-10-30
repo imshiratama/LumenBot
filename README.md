@@ -24,7 +24,7 @@ LumenBot welcomes new members with a guided verification flow: profile checks, X
 - **Join protection** — restricts new members immediately and presents a verification card.
 - **Profile checks** — verifies a Telegram first name and profile photo.
 - **X follow verification** — checks the submitted X account against your target account.
-- **Manual review** — routes X service failures to authorized administrators by default.
+- **Manual actions** — current group administrators can approve or reject from the verification card.
 - **Timeout handling** — removes unverified members after a configurable deadline.
 - **Concurrent sessions** — uses Redis atomic transitions to coordinate Telegram and QStash callbacks.
 - **Protected endpoints** — verifies Telegram secrets, QStash signatures, and administrator credentials.
@@ -60,7 +60,7 @@ Built with Python 3.12, `python-telegram-bot` 20.8, FastAPI, HTTPX, Upstash Redi
 - Create an Upstash Redis database; record its REST URL and REST token.
 - Open Upstash QStash; record its token, Current Signing Key, and Next Signing Key.
 - Obtain a TwitterAPI.io API key.
-- Prepare your target X username, Telegram administrator user ID, and supergroup ID.
+- Prepare your target X username and supergroup ID.
 
 ### 2. Import into Vercel
 
@@ -80,7 +80,6 @@ Add these variables under **Project → Settings → Environment Variables** for
 | `TG_TOKEN` | Bot token issued by BotFather. |
 | `TARGET_X_ID` | Target X username, without `@`. |
 | `TWITTERAPI_KEY` | API key issued by TwitterAPI.io. |
-| `ADMIN_IDS` | Telegram user IDs allowed to perform manual reviews. Separate multiple IDs with commas. Required when manual fallback is enabled. |
 | `ALLOWED_CHAT_IDS` | Supergroup IDs where verification is enabled, usually beginning with `-100`. Separate multiple IDs with commas. Empty enables all groups; an explicit allowlist is recommended. |
 | `TELEGRAM_WEBHOOK_SECRET` | Secret used to authenticate Telegram Webhook requests. |
 | `ADMIN_SETUP_SECRET` | Secret protecting `/api/setup` and `/api/setup/status`. |
@@ -146,7 +145,7 @@ Add the bot as a supergroup administrator with:
 
 Other administrator privileges are unnecessary. Bot Privacy does not control `chat_member` updates, but the bot must be an administrator to receive other members' updates.
 
-`ADMIN_IDS` contains user IDs. `ALLOWED_CHAT_IDS` contains group IDs. Preserve the leading minus sign in group IDs; do not use usernames or invite links.
+Group administrators are detected live through Telegram, so no administrator ID list is required. `ALLOWED_CHAT_IDS` contains group IDs; preserve the leading minus sign and do not use usernames or invite links.
 
 ## Verification Flow
 
@@ -156,7 +155,7 @@ Other administrator privileges are unnecessary. Bot Privacy does not control `ch
 4. The button opens a private chat with a signed session-specific `/start` payload. The user sends an X username directly.
 5. TwitterAPI.io checks the follow relationship. Only a strict JSON boolean `data.following: true` passes automatically.
 6. Successful verification removes the personal restriction and deletes the verification messages.
-7. X service failures create an administrator review card by default. Only configured administrator IDs can act on it, and the deadline continues.
+7. X service failures create an administrator review card by default. The initial verification card also has a separate row of administrator approve/reject buttons. Current group owners and administrators are verified through Telegram, and the deadline continues.
 8. Expired sessions trigger a member-status check followed by ban and unban, allowing the removed user to request entry again later. Members already unrestricted by an administrator are not kicked.
 
 Each session belongs to one group and one user. Switching groups requires entering through the new group's current verification card.
@@ -193,7 +192,7 @@ Telegram Bot API URLs can contain the bot token. Redact them before sharing logs
 
 - Timeout removal depends on QStash delivery. Failed scheduling or Telegram ban/unban operations require administrator attention.
 - Third-party X data may be delayed, restricted, or unavailable.
-- Manual review does not extend the verification deadline.
+- Manual review and manual actions do not extend the verification deadline.
 - LumenBot is not a complete anti-spam, community-risk, or identity-verification platform.
 
 ## Development
